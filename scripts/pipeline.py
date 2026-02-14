@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 # Add scripts dir to path for imports
@@ -99,6 +100,7 @@ def main():
         action="store_true",
         help="Skip annotation step (if already done)",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without calling API")
     args = parser.parse_args()
 
     client = genai.Client(api_key=API_KEY)
@@ -116,57 +118,103 @@ def main():
     else:
         print("[OK] Skipping annotation (--skip-annotate)")
 
-    # Step 2 + 3: Generate + Verify loop
+    # Step 2 + 3: Generate + Verify loop with feedback passthrough
+    attempts = []  # [(path, score, verdict), ...]
+    feedback = ""
+
     for attempt in range(1, args.max_retries + 1):
         print(f"\n{'='*60}")
-        print(f"  STEP 2: GENERATE (attempt {attempt}/{args.max_retries})")
+        print(f"  ATTEMPT {attempt}/{args.max_retries} - {args.zone}")
         print(f"{'='*60}")
 
-        result_path = generate(client, args.zone)
+        if feedback:
+            print(f"  [FEEDBACK] Injecting corrections from previous attempt")
+
+        # Generate
+        print(f"\n  --- GENERATE ---")
+        result_path = generate(client, args.zone, feedback=feedback, dry_run=args.dry_run)
+
+        if args.dry_run:
+            print("\n[DRY RUN] Pipeline would continue with verify step")
+            return
+
         if not result_path:
             print(f"[ERROR] Generation failed on attempt {attempt}")
             if attempt < args.max_retries:
-                print("Retrying...")
+                time.sleep(2)
                 continue
             else:
                 print("Max retries reached. Check your prompts and references.")
-                return
+                break
 
-        print(f"\n{'='*60}")
-        print(f"  STEP 3: VERIFY")
-        print(f"{'='*60}")
-
+        # Verify
+        print(f"\n  --- VERIFY ---")
         verdict = verify_image(client, result_path)
         final_verdict = handle_verdict(result_path, verdict)
+        score = verdict.get("total", 0)
+        attempts.append((result_path, score, final_verdict))
 
         if final_verdict == "PASS":
             print(f"\n{'='*60}")
             print(f"  PIPELINE COMPLETE - {args.zone}")
             print(f"  Result: {result_path.name}")
-            print(f"  Score: {verdict['total']}/50")
+            print(f"  Score: {score}/50")
             print(f"{'='*60}")
             return
 
+        # Build feedback for next attempt from verification
+        feedback_parts = []
+        if verdict.get("prompt_adjustments"):
+            feedback_parts.extend(verdict["prompt_adjustments"])
+        if verdict.get("issues"):
+            feedback_parts.append("Issues to fix: " + "; ".join(verdict["issues"]))
+        if verdict.get("feedback") and not verdict.get("prompt_adjustments"):
+            feedback_parts.append(verdict["feedback"])
+        feedback = "\n".join(feedback_parts) if feedback_parts else verdict.get("feedback", "")
+
+        # Convergence detection: if score hasn't improved for 2 consecutive attempts
+        if len(attempts) >= 2:
+            prev_score = attempts[-2][1]
+            if score <= prev_score:
+                # Check if 2 consecutive non-improvements
+                if len(attempts) >= 3:
+                    prev_prev_score = attempts[-3][1]
+                    if prev_score <= prev_prev_score:
+                        print(f"\n[CONVERGED] Score not improving: {prev_prev_score} -> {prev_score} -> {score}")
+                        print(f"Stopping early.")
+                        break
+
         if final_verdict == "MARGINAL":
-            print(f"\n[WARN] Marginal result ({verdict['total']}/50)")
-            print(f"Keeping image but trying for better on next attempt...")
-            # Don't reject marginal - keep it, but try again
+            print(f"\n[WARN] Marginal result ({score}/50)")
             if attempt < args.max_retries:
+                print(f"Trying for better with feedback injection...")
+                time.sleep(2)
                 continue
+            # Last attempt - will fall through to summary
+
+        if final_verdict == "REJECT":
+            print(f"\n[REJECT] Score {score}/50")
+            if attempt < args.max_retries:
+                print(f"Retrying with feedback...")
+                time.sleep(2)
             else:
-                print(f"\nBest result after {args.max_retries} attempts: {result_path.name}")
-                return
+                print(f"\nAll {args.max_retries} attempts exhausted.")
 
-        # REJECT
-        print(f"\n[REJECT] Score {verdict['total']}/50")
-        if verdict["feedback"]:
-            print(f"Feedback: {verdict['feedback'][:300]}")
-        if attempt < args.max_retries:
-            print(f"Retrying ({attempt + 1}/{args.max_retries})...")
-        else:
-            print(f"\nAll {args.max_retries} attempts rejected. Review prompts and references.")
-
-    print("\nPipeline finished. Check generated/visuals/ and generated/rejected/")
+    # Summary: report best version
+    if attempts:
+        best = max(attempts, key=lambda x: x[1])
+        best_path, best_score, best_verdict = best
+        print(f"\n{'='*60}")
+        print(f"  PIPELINE SUMMARY - {args.zone}")
+        print(f"  Attempts: {len(attempts)}")
+        for i, (p, s, v) in enumerate(attempts, 1):
+            marker = " <-- BEST" if (p, s, v) == best else ""
+            name = p.name if p.exists() else f"{p.name} (moved to rejected)"
+            print(f"    #{i}: {name} - {s}/50 [{v}]{marker}")
+        print(f"  Best: {best_path.name} ({best_score}/50)")
+        print(f"{'='*60}")
+    else:
+        print("\n[ERROR] No successful generations. Check prompts and references.")
 
 
 if __name__ == "__main__":

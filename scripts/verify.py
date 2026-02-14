@@ -13,9 +13,11 @@ Usage:
 
 import argparse
 import io
+import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from google import genai
@@ -78,15 +80,44 @@ def get_images(directory: Path, max_count: int = 3) -> list[Path]:
 
 
 def parse_verdict(text: str) -> dict:
-    """Parse the verification response to extract verdict and score."""
-    result = {"verdict": "UNKNOWN", "total": 0, "feedback": "", "raw": text}
+    """Parse verification response. Tries JSON first, falls back to regex."""
+    result = {"verdict": "UNKNOWN", "total": 0, "feedback": "", "issues": [], "prompt_adjustments": [], "raw": text}
 
-    # Extract TOTAL score
+    # Try JSON parsing first
+    json_match = re.search(r'\{[\s\S]*"total"[\s\S]*\}', text)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            result["total"] = int(data.get("total", 0))
+            verdict = data.get("verdict", "").upper()
+            if verdict in ("PASS", "MARGINAL", "REJECT"):
+                result["verdict"] = verdict
+            result["issues"] = data.get("issues", [])
+            result["prompt_adjustments"] = data.get("prompt_adjustments", [])
+            # Build feedback from issues + adjustments
+            parts = []
+            if result["issues"]:
+                parts.append("Issues: " + "; ".join(result["issues"]))
+            if result["prompt_adjustments"]:
+                parts.append("Adjustments: " + "; ".join(result["prompt_adjustments"]))
+            result["feedback"] = " | ".join(parts) if parts else ""
+            # Derive verdict from score if not explicit
+            if result["verdict"] == "UNKNOWN" and result["total"] > 0:
+                if result["total"] >= PASS_THRESHOLD:
+                    result["verdict"] = "PASS"
+                elif result["total"] >= MARGINAL_THRESHOLD:
+                    result["verdict"] = "MARGINAL"
+                else:
+                    result["verdict"] = "REJECT"
+            return result
+        except (json.JSONDecodeError, ValueError, KeyError):
+            pass  # Fall through to regex
+
+    # Regex fallback (existing logic)
     total_match = re.search(r"TOTAL:\s*(\d+)/50", text)
     if total_match:
         result["total"] = int(total_match.group(1))
 
-    # Extract VERDICT
     verdict_match = re.search(r"VERDICT:\s*(PASS|MARGINAL|REJECT)", text, re.IGNORECASE)
     if verdict_match:
         result["verdict"] = verdict_match.group(1).upper()
@@ -94,10 +125,9 @@ def parse_verdict(text: str) -> dict:
         result["verdict"] = "PASS"
     elif result["total"] >= MARGINAL_THRESHOLD:
         result["verdict"] = "MARGINAL"
-    else:
+    elif result["total"] > 0:
         result["verdict"] = "REJECT"
 
-    # Extract FEEDBACK
     feedback_match = re.search(r"FEEDBACK:\s*(.+)", text, re.DOTALL)
     if feedback_match:
         result["feedback"] = feedback_match.group(1).strip()
@@ -163,8 +193,16 @@ def verify_image(client: genai.Client, image_path: Path) -> dict:
             ),
         )
 
+        # Safe access to response
+        try:
+            parts = response.candidates[0].content.parts
+        except (IndexError, AttributeError):
+            text = getattr(response, 'text', '') or str(response)
+            print(f"[WARN] No valid response from Gemini: {text[:200]}")
+            return {"verdict": "UNKNOWN", "total": 0, "feedback": "No valid response from Gemini", "issues": [], "prompt_adjustments": [], "raw": text}
+
         response_text = ""
-        for part in response.candidates[0].content.parts:
+        for part in parts:
             if part.text:
                 response_text += part.text
 
@@ -180,7 +218,7 @@ def verify_image(client: genai.Client, image_path: Path) -> dict:
 
     except Exception as e:
         print(f"[ERROR] Verification failed: {e}")
-        return {"verdict": "UNKNOWN", "total": 0, "feedback": str(e), "raw": ""}
+        return {"verdict": "UNKNOWN", "total": 0, "feedback": str(e), "issues": [], "prompt_adjustments": [], "raw": ""}
 
 
 def handle_verdict(image_path: Path, result: dict) -> str:
@@ -197,6 +235,10 @@ def handle_verdict(image_path: Path, result: dict) -> str:
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"\n## {image_path.name} - {result['verdict']}\n")
         f.write(f"- Score: {result['total']}/50\n")
+        if result.get("issues"):
+            f.write(f"- Issues: {', '.join(result['issues'])}\n")
+        if result.get("prompt_adjustments"):
+            f.write(f"- Adjustments: {', '.join(result['prompt_adjustments'])}\n")
         if result["feedback"]:
             f.write(f"- Feedback: {result['feedback']}\n")
         f.write(f"- Raw:\n```\n{result['raw'][:500]}\n```\n")

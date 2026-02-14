@@ -14,6 +14,7 @@ Usage:
 import argparse
 import io
 import re
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -41,6 +42,7 @@ if not API_KEY:
 MODEL = "nano-banana-pro-preview"
 SPACE_DIR = PROJECT_ROOT / "ref" / "space"
 OUTPUT_DIR = PROJECT_ROOT / "generated" / "annotated"
+ANNOTATED_DIR = OUTPUT_DIR  # alias used by pipeline.py
 
 
 def load_image(path: Path) -> Image.Image:
@@ -95,11 +97,19 @@ def annotate_photo(client: genai.Client, photo_path: Path) -> Path | None:
             ),
         )
 
+        # Safe access to response
+        try:
+            parts = response.candidates[0].content.parts
+        except (IndexError, AttributeError):
+            text = getattr(response, 'text', '') or str(response)
+            print(f"[WARN] No valid response from Gemini. Response: {text[:300]}")
+            return None
+
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stem = photo_path.stem
         text_parts = []
 
-        for part in response.candidates[0].content.parts:
+        for part in parts:
             if part.inline_data and part.inline_data.mime_type.startswith("image/"):
                 output_path = OUTPUT_DIR / f"{stem}_annotated.jpg"
                 out_img = Image.open(io.BytesIO(part.inline_data.data))

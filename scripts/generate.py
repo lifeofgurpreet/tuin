@@ -21,6 +21,7 @@ import io
 import os
 import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -107,7 +108,7 @@ def get_next_version(zone: str) -> int:
     return max(numbers) + 1 if numbers else 1
 
 
-def generate(client: genai.Client, zone: str) -> Path | None:
+def generate(client: genai.Client, zone: str, feedback: str = "", dry_run: bool = False) -> Path | None:
     """Generate a design visual for a zone."""
     if zone not in ZONES:
         print(f"[ERROR] Unknown zone: {zone}. Choose from: {', '.join(ZONES)}")
@@ -197,6 +198,10 @@ def generate(client: genai.Client, zone: str) -> Path | None:
     prompt_parts.append("=== GENERATION TASK ===\n" + zone_prompt)
 
     full_prompt = "\n\n".join(prompt_parts)
+
+    if feedback:
+        full_prompt += "\n\n## ADJUSTMENT BASED ON PREVIOUS FEEDBACK\n" + feedback
+
     contents.append(full_prompt)
     print(f"    [OK] Prompt: {len(full_prompt)} chars")
 
@@ -205,6 +210,21 @@ def generate(client: genai.Client, zone: str) -> Path | None:
         if isinstance(c, types.Part)
     ):
         print("[WARN] No images being sent. Results will be generic.")
+
+    if dry_run:
+        print(f"\n{'='*60}")
+        print(f"  DRY RUN - Would send to Gemini:")
+        print(f"{'='*60}")
+        image_count = sum(1 for c in contents if isinstance(c, types.Part) and hasattr(c, 'inline_data') and c.inline_data)
+        print(f"  Images: {image_count}")
+        print(f"    Space photos: {len(annotated)}")
+        print(f"    Inspiration refs: {len(inspiration)}")
+        print(f"    Layout drawings: {len(layouts)}")
+        print(f"  Prompt length: {len(full_prompt)} chars")
+        print(f"\n--- PROMPT TEXT ---")
+        print(full_prompt)
+        print(f"--- END PROMPT ---")
+        return None
 
     # Generate
     print(f"\n[*] Calling nano-banana-pro-preview...")
@@ -218,11 +238,19 @@ def generate(client: genai.Client, zone: str) -> Path | None:
             ),
         )
 
+        # Safe access to response
+        try:
+            parts = response.candidates[0].content.parts
+        except (IndexError, AttributeError):
+            text = getattr(response, 'text', '') or str(response)
+            print(f"[WARN] No valid response from Gemini. Response text: {text[:300]}")
+            return None
+
         VISUALS_DIR.mkdir(parents=True, exist_ok=True)
         version = get_next_version(zone)
         text_parts = []
 
-        for part in response.candidates[0].content.parts:
+        for part in parts:
             if part.inline_data and part.inline_data.mime_type.startswith("image/"):
                 output_path = VISUALS_DIR / f"{zone}_v{version}.jpg"
                 out_img = Image.open(io.BytesIO(part.inline_data.data))
@@ -272,6 +300,7 @@ def main():
         default=1,
         help="Number of variations to generate (default: 1)",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without calling API")
     args = parser.parse_args()
 
     client = genai.Client(api_key=API_KEY)
@@ -280,13 +309,14 @@ def main():
     for i in range(args.count):
         if args.count > 1:
             print(f"\n--- Variation {i + 1}/{args.count} ---")
-        result = generate(client, args.zone)
+        result = generate(client, args.zone, dry_run=args.dry_run)
         if result:
             results.append(result)
 
-    print(f"\n{'='*50}")
-    print(f"Generated {len(results)}/{args.count} visuals for zone: {args.zone}")
-    print(f"Output: {VISUALS_DIR}")
+    if not args.dry_run:
+        print(f"\n{'='*50}")
+        print(f"Generated {len(results)}/{args.count} visuals for zone: {args.zone}")
+        print(f"Output: {VISUALS_DIR}")
 
 
 if __name__ == "__main__":

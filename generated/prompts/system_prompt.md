@@ -22,9 +22,35 @@
 4. **Sun/shade awareness** - Shade structures should be positioned based on annotated sun direction
 5. **Safety** - Play area must be visible from seating area (line of sight)
 
+## Material Palette
+
+Use these materials consistently across all zones:
+
+| Category | Preferred Materials | Avoid |
+|----------|-------------------|-------|
+| **Wood** | Douglas fir, larch, robinia (untreated or oiled) | Pressure-treated pine, painted wood |
+| **Stone** | Natural sandstone, cobblestone, gravel | Polished marble, bright white stone |
+| **Fabric** | Canvas shade sails, linen cushions | Plastic tarps, synthetic mesh |
+| **Metal** | Weathered corten steel accents, black iron | Chrome, shiny aluminium |
+| **Ground** | Bark mulch, gravel, natural stone pavers | Concrete slabs, rubber tiles |
+
+## Color Direction
+
+- **Earthy tones**: warm greys, sandy beige, moss green, terracotta
+- **Wood tones**: honey, weathered silver-grey, warm brown
+- **Accents**: muted olive green, dusty blue, warm white
+- **Avoid**: bright primary colors, stark white, black
+
 ## Style Direction
 
 - Natural, organic, warm
 - Not overly manicured - relaxed garden feel
 - Integration with existing landscape
 - Sustainable materials where possible
+
+### What "relaxed garden" looks like:
+- Gravel paths with soft edges (not razor-straight borders)
+- Plants spilling slightly over edges
+- Mix of textures: rough wood, smooth stone, soft grasses
+- Weathered finishes that look lived-in, not showroom-new
+- Asymmetric arrangements that feel natural, not rigidly geometric
